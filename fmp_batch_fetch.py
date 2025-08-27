@@ -4,7 +4,7 @@ import sqlite3
 import time
 
 # -------------------- 配置 --------------------
-API_KEY = '7djxP4qVYLIpvVLlJAquBpK58kMBPMxD'   # 🔑 替换成你的 FMP API Key
+API_KEY = ''   # 🔑 替换成你的 FMP API Key
 BATCH_SIZE = 5                  # 每批查询的 ticker 数量
 LIMIT = 1                       # 每个 ticker 查几期财报
 API_URL = 'https://financialmodelingprep.com/api/v3/income-statement/{}?limit={}&period=quarter&apikey={}'
