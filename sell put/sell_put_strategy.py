@@ -7,12 +7,12 @@ import pandas as pd
 def bs_put_price(S, K, T, r, sigma):
     d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
     d2 = d1 - sigma * np.sqrt(T)
-    return K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+    return float(K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1))
 
 # Put delta
 def bs_put_delta(S, K, T, r, sigma):
     d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
-    return norm.cdf(d1) - 1
+    return float(norm.cdf(d1) - 1)
 
 # Find strike K that yields target delta for given IV guess
 def find_strike_for_delta(S, T_days, r, target_delta, iv_guess):
@@ -85,11 +85,11 @@ def iterative_calculate_iv(S, capital, target_annual_return, T_days, r, target_d
 
 # 示例调用
 result = iterative_calculate_iv(
-    S=74,                   # 当前股价
-    capital=20000,           # 本金
-    target_annual_return=0.30,  # 目标年化收益30%
-    T_days=51,                  # 期权到期时间30天
-    r=0.03,                   # 无风险利率4%
+    S=17,                   # 当前股价
+    capital=30000,           # 本金
+    target_annual_return=0.3,  # 目标年化收益30%
+    T_days=21,                  # 期权到期时间30天
+    r=0.03,                     # 无风险利率3%
     target_delta=-0.2,       # 固定卖出delta为-0.2的put
     delta_tol=0.01,          # delta误差容忍±0.01
     max_iter=20

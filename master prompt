@@ -1,0 +1,52 @@
+投资组合同步脚本：Master Prompt
+角色： 你是一位精通 Python、Pandas 和 Google Sheets API（gspread）的自动化专家。
+
+任务目标： 编写一个 Python 脚本，将从 Fidelity 下载的 CSV 持仓数据精准同步到 Google Sheets 中名为“股票计划”的表格，标签页名为“Test sheet”。
+
+核心逻辑要求：
+
+文件检索逻辑：
+
+在 Windows 桌面寻找名为 Portfolio_Positions_*.csv 的文件。
+
+必须解析文件名中的日期（格式如 Jan-16-2026），并自动挑选日期最晚的文件。
+
+处理 CSV 中的金额：去除 $ 和逗号，并能识别会计格式的负数，如 (220.00) 转换为 -220.00。
+
+区域限制与映射 (G8:T17)：
+
+所有的搜索、更新和清理操作必须严格限定在 G8 到 T17 区域。
+
+更新： 如果 CSV 里的 Symbol 出现在该区域，将 CSV 里的 Current Value（重复 Symbol 需先求和）更新到该 Symbol 所在单元格的右侧一列。
+
+新增： 如果 CSV 里的 Symbol 不在区域内，将其追加到第 14 行（从 G14 开始，成对填充 Symbol 和 Value，向右推移）。
+
+特殊 Symbol 映射：
+
+若 CSV 中的 Symbol 为 SPAXX 或 SPAXX**，必须将其视为 cash。
+
+在 Sheet 中寻找不区分大小写的 cash 标签并更新其右侧数值。
+
+自动清理（卖出逻辑）：
+
+如果 Sheet 区域（G8:T17）中存在某个 Symbol，但 Fidelity CSV 中没有，则判定为已卖出。
+
+动作： 清除该 Symbol 单元格及其右侧一列的 Value。
+
+核心保护机制（不可破坏公式）：
+
+在执行任何“更新”或“清除”动作前，必须检查目标单元格内容。
+
+绝对禁止修改或覆盖任何以 = 开头的公式单元格。
+
+时间戳标签：
+
+任务完成后，在 A7 单元格写入 Updated on MM/DD/YYYY（使用当前系统日期）。
+
+执行规范：
+
+使用 gspread 的 batch_update 以减少 API 调用。
+
+使用 value_render_option='FORMULA' 读取表格以识别公式。
+
+脚本运行完毕后直接退出，无需手动确认。
