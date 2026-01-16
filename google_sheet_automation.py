@@ -20,45 +20,24 @@ START_COL_STR = 'G'
 END_COL_STR = 'T'
 SEARCH_RANGE = f"{START_COL_STR}{START_ROW}:{END_COL_STR}{END_ROW}"
 
-# 月份转换映射
 MONTH_MAP = {
     'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
     'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12
 }
 
 def extract_date_from_filename(filename):
-    """
-    更稳健地从文件名中提取日期。
-    支持格式如：Jan-16-2026 或 Jan_16_2026
-    """
-    # 匹配：三个字母月份 + 分隔符 + 1或2位天 + 分隔符 + 4位年
     match = re.search(r'([A-Za-z]{3})[-_](\d{1,2})[-_](\d{4})', filename)
     if match:
         month_str, day, year = match.groups()
         month = MONTH_MAP.get(month_str.capitalize(), 1)
-        parsed_date = datetime.datetime(int(year), month, int(day))
-        return parsed_date
+        return datetime.datetime(int(year), month, int(day))
     return datetime.datetime(1970, 1, 1)
 
 def get_latest_csv_by_filename_date():
-    """根据文件名日期精准找到最新的 CSV"""
     search_path = os.path.join(DESKTOP_PATH, FILE_PATTERN)
     files = glob.glob(search_path)
-    if not files:
-        return None
-    
-    # 调试信息：打印每个文件的解析结果
-    print("🔎 正在扫描桌面文件...")
-    file_date_pairs = []
-    for f in files:
-        fname = os.path.basename(f)
-        fdate = extract_date_from_filename(fname)
-        file_date_pairs.append((f, fdate))
-        print(f"  - 文件: {fname} -> 解析日期: {fdate.strftime('%Y-%m-%d')}")
-
-    # 按照日期排序
-    latest_file = max(file_date_pairs, key=lambda x: x[1])[0]
-    return latest_file
+    if not files: return None
+    return max(files, key=lambda f: extract_date_from_filename(os.path.basename(f)))
 
 def convert_currency(val):
     if pd.isna(val) or str(val).strip() == "": return 0.0
@@ -76,20 +55,31 @@ def run_precision_sync():
         print("❌ 错误：在桌面上没找到符合格式的 CSV 文件。")
         return
 
-    print(f"\n🚀 确认使用最新日期文件: {os.path.basename(csv_path)}")
+    print(f"📂 正在处理最新日期文件: {os.path.basename(csv_path)}")
 
     try:
-        # 1. 处理 CSV 数据
-        df_raw = pd.read_csv(csv_path)
-        df_clean = df_raw[df_raw['Symbol'].notna()].copy()
-        df_clean['Current Value'] = df_clean['Current Value'].apply(convert_currency)
+        # 【重要修正】：增加 index_col=False 防止列偏移
+        # 即使 CSV 末尾有多余逗号，这样也能保证 Symbol 在 'Symbol' 列
+        df_raw = pd.read_csv(csv_path, index_col=False)
         
-        # 基础汇总并处理 SPAXX -> cash
+        # 如果依然担心名称对不上，我们直接用列索引（Symbol是第3列, index=2; Current Value是第8列, index=7）
+        symbol_col = 'Symbol' if 'Symbol' in df_raw.columns else df_raw.columns[2]
+        value_col = 'Current Value' if 'Current Value' in df_raw.columns else df_raw.columns[7]
+        
+        print(f"🔎 正在读取列: [{symbol_col}] 作为代码, [{value_col}] 作为市值")
+
+        # 清理并转换
+        df_clean = df_raw[df_raw[symbol_col].notna()].copy()
+        df_clean[value_col] = df_clean[value_col].apply(convert_currency)
+        
         summary = {}
         for _, row in df_clean.iterrows():
-            raw_sym = str(row['Symbol']).replace("**", "").strip()
+            raw_sym = str(row[symbol_col]).replace("**", "").strip()
+            # 过滤掉末尾的说明文字行（Fidelity CSV 末尾通常有长串免责声明）
+            if len(raw_sym) > 30: continue 
+            
             target = "cash" if raw_sym.upper() == "SPAXX" else raw_sym
-            summary[target] = summary.get(target, 0) + row['Current Value']
+            summary[target] = summary.get(target, 0) + row[value_col]
 
         csv_symbols = set(summary.keys())
 
@@ -106,7 +96,7 @@ def run_precision_sync():
         while len(full_matrix) < num_rows: full_matrix.append([""] * num_cols)
 
         updates = []
-        start_col_idx = 7 
+        start_col_idx = 7 # G列索引
 
         # 4. 更新/新增逻辑
         for symbol, value in summary.items():
@@ -122,6 +112,7 @@ def run_precision_sync():
                             if not right_val.startswith('='):
                                 actual_row, actual_col = r_idx + START_ROW, c_idx + start_col_idx + 1
                                 updates.append({'range': gspread.utils.rowcol_to_a1(actual_row, actual_col), 'values': [[value]]})
+                                print(f"✅ 更新: {symbol} -> {value}")
                             found = True
                         break
                 if found: break
@@ -134,6 +125,7 @@ def run_precision_sync():
                         updates.append({'range': gspread.utils.rowcol_to_a1(14, actual_col_sym), 'values': [[symbol]]})
                         updates.append({'range': gspread.utils.rowcol_to_a1(14, actual_col_val), 'values': [[value]]})
                         full_matrix[row_14_idx][c_idx], full_matrix[row_14_idx][c_idx+1] = symbol, value
+                        print(f"✨ 新增: {symbol}")
                         break
 
         # 5. 清理已卖出逻辑
@@ -146,6 +138,7 @@ def run_precision_sync():
                     if not is_present and cell_str.lower() not in ignore_labels:
                         actual_row, actual_col = r_idx + START_ROW, c_idx + start_col_idx
                         updates.append({'range': gspread.utils.rowcol_to_a1(actual_row, actual_col), 'values': [['']]})
+                        print(f"🧹 清理已卖出: {cell_str}")
                         if c_idx + 1 < num_cols:
                             if not str(row[c_idx + 1]).strip().startswith('='):
                                 updates.append({'range': gspread.utils.rowcol_to_a1(actual_row, actual_col + 1), 'values': [['']]})
@@ -157,7 +150,7 @@ def run_precision_sync():
         # 7. 提交
         if updates:
             worksheet.batch_update(updates)
-            print(f"🎉 同步成功！使用的是 {os.path.basename(csv_path)}")
+            print(f"🎉 同步成功！")
         else:
             print("☕ 无需改动。")
 
