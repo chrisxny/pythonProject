@@ -10,7 +10,7 @@ import re
 DESKTOP_PATH = os.path.join(os.environ['USERPROFILE'], 'Desktop')
 CREDENTIALS_FILE = "credentials.json"
 SPREADSHEET_NAME = "股票计划"
-TARGET_SHEET = "Test Sheet"
+TARGET_SHEET = "2026"
 FILE_PATTERN = "Portfolio_Positions_*.csv" 
 
 # 锁定区域：G8:T17
@@ -91,7 +91,7 @@ def run_precision_sync():
 
         # 3. 读取限定区域
         matrix = worksheet.get(SEARCH_RANGE, value_render_option='FORMULA')
-        num_rows, num_cols = END_ROW - START_ROW + 1, 14
+        num_rows, num_cols = END_ROW - START_ROW + 1, 15 # G-T 共 15 列
         full_matrix = [row + [""] * (num_cols - len(row)) for row in matrix]
         while len(full_matrix) < num_rows: full_matrix.append([""] * num_cols)
 
@@ -117,14 +117,14 @@ def run_precision_sync():
                         break
                 if found: break
             
-            if not found: # 第 14 行追加
-                row_14_idx = 14 - START_ROW
+            if not found: # 第 15 行追加
+                row_15_idx = 15 - START_ROW
                 for c_idx in range(0, num_cols - 1, 2):
-                    if not str(full_matrix[row_14_idx][c_idx]).strip():
+                    if not str(full_matrix[row_15_idx][c_idx]).strip():
                         actual_col_sym, actual_col_val = c_idx + start_col_idx, c_idx + start_col_idx + 1
-                        updates.append({'range': gspread.utils.rowcol_to_a1(14, actual_col_sym), 'values': [[symbol]]})
-                        updates.append({'range': gspread.utils.rowcol_to_a1(14, actual_col_val), 'values': [[value]]})
-                        full_matrix[row_14_idx][c_idx], full_matrix[row_14_idx][c_idx+1] = symbol, value
+                        updates.append({'range': gspread.utils.rowcol_to_a1(15, actual_col_sym), 'values': [[symbol]]})
+                        updates.append({'range': gspread.utils.rowcol_to_a1(15, actual_col_val), 'values': [[value]]})
+                        full_matrix[row_15_idx][c_idx], full_matrix[row_15_idx][c_idx+1] = symbol, value
                         print(f"✨ 新增: {symbol}")
                         break
 
