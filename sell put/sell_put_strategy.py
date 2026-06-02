@@ -3,10 +3,6 @@ import pandas as pd
 from scipy.stats import norm
 from scipy.optimize import brentq
 
-# --- 终端表格对齐设置 ---
-pd.set_option('display.unicode.east_asian_width', True)
-pd.set_option('display.unicode.ambiguous_as_wide', True)
-
 # --- 智能百分比解析器 ---
 def parse_percentage(val):
     if isinstance(val, str):
@@ -32,41 +28,78 @@ def find_strike_for_target_return(S, iv30, T_days, target_return, r=0.03):
     T = T_days / 365
     def objective(K):
         price = bs_put_price(S, K, T, r, iv30)
-        # 年化收益率公式：(Price/K) / T
         current_return = (price / K) / T
         return current_return - target_return
     try:
-        # 在股价的 50% 到 100% 之间寻找行权价
         return brentq(objective, S * 0.5, S * 1.0)
     except ValueError:
         return None
 
-# --- 基于 IVP 动态生成风控阈值 ---
-def get_ivp_thresholds(ivp):
+# --- 基于 IVP 与 HVP 复合考量生成动态风控阈值（带逻辑链追溯） ---
+def get_combined_thresholds_with_trace(ivp, hvp):
     ivp_clipped = np.clip(ivp, 0, 100)
-    ivp_nodes = [0, 30, 40, 50, 60, 70, 80, 90, 100]
-    delta_nodes = [-0.4, -0.35, -0.30, -0.25, -0.22, -0.20, -0.18, -0.15, -0.10] 
-    return_nodes = [0.15, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.58, 0.60]
-    limit_delta = np.interp(ivp_clipped, ivp_nodes, delta_nodes)
-    ideal_return = np.interp(ivp_clipped, ivp_nodes, return_nodes)
-    return float(limit_delta), float(ideal_return)
+    hvp_clipped = np.clip(hvp, 0, 100)
+    
+    # 1. 第一决定因素：由 IVP 绝对值决定【基准风控框架】
+    ivp_nodes = [30, 40, 50, 60, 70, 80, 90, 100]
+    base_delta_nodes = [-0.35, -0.30, -0.25, -0.22, -0.18, -0.15, -0.12, -0.08] 
+    base_return_nodes = [0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.58, 0.60]
+    
+    base_delta = float(np.interp(ivp_clipped, ivp_nodes, base_delta_nodes))
+    base_return = float(np.interp(ivp_clipped, ivp_nodes, base_return_nodes))
+    
+    # 2. 第二决定因素：利用 HVP 绝对值作为风险调节阀
+    if ivp > hvp:
+        delta_multiplier = float(np.interp(hvp_clipped, [10, 30, 60], [1.3, 1.0, 0.8]))
+        return_multiplier = float(np.interp(hvp_clipped, [10, 30, 60], [1.2, 1.0, 0.9]))
+        env_desc = f"IVP({ivp}) > HVP({hvp}) 存在波动率溢价，依据 HVP 绝对值调节"
+    else:
+        delta_multiplier = 0.7
+        return_multiplier = 0.8
+        env_desc = f"IVP({ivp}) <= HVP({hvp}) 波动率未充分覆盖现实风险，触发防御性惩罚缩水"
+        
+    # 3. 计算最终联合作用阈值
+    final_limit_delta = base_delta * delta_multiplier
+    final_ideal_return = base_return * return_multiplier
+    
+    # 严格兜底
+    final_limit_delta = float(np.clip(final_limit_delta, -0.42, -0.05))
+    
+    # 构建逻辑链说明文本
+    trace_msg = (
+        f"[风控推导] ① 基准定位(由IVP决定) -> 基准 Delta: {base_delta:.4f} | 基准收益率: {base_return*100:.2f}%\n"
+        f"[风控推导] ② 联合调整(由HVP决定) -> 环境判断: {env_desc}\n"
+        f"[风控推导]    调整系数 -> Delta 乘数: {delta_multiplier:.2f} | 收益率乘数: {return_multiplier:.2f}\n"
+        f"[风控推导] ③ 最终计算 -> 最大 Delta 底 = {base_delta:.4f} * {delta_multiplier:.2f} = {final_limit_delta:.4f}\n"
+        f"[风控推导]             -> 目标收益率 = {base_return*100:.2f}% * {return_multiplier:.2f} = {final_ideal_return*100:.2f}%"
+    )
+    
+    return final_limit_delta, final_ideal_return, trace_msg
 
 # --- 主测算引擎 ---
-def find_optimal_strikes_with_alert(S, iv30, ivp, T_days, absolute_min_return=0.30, yield_step=0.01, r=0.03, step=0.5):
-    iv30 = parse_percentage(iv30)
+def find_optimal_strikes_with_alert(S, iv30, ivp, hvp, T_days, absolute_min_return=0.30, yield_step=0.01, r=0.03, step=0.5):
+    iv30_val = parse_percentage(iv30)
     
-    # 1. 极低波动率熔断
-    MIN_IVP_THRESHOLD = 30
-    if ivp < MIN_IVP_THRESHOLD:
-        return f"【系统熔断】当前 IVP 为 {ivp}，低于红线 ({MIN_IVP_THRESHOLD})。禁止交易。"
+    # 熔断检查
+    if ivp < 30:
+        print(f"【系统熔断】IVP: {ivp}th 低于 30th 硬性底线，禁止开仓。")
+        return
+    vp_diff = ivp - hvp
+    if vp_diff < -40:
+        print(f"【系统熔断】IVP-HVP 恶性背离({vp_diff})，禁止开仓。")
+        return
+    if iv30_val < 0.20:
+        print(f"【系统熔断】绝对 IV30({iv30_val*100:.2f}%) 过低，禁止开仓。")
+        return
 
-    limit_delta, ideal_return = get_ivp_thresholds(ivp)
+    # 获取风控参数及逻辑链文本
+    limit_delta, ideal_return, trace_msg = get_combined_thresholds_with_trace(ivp, hvp)
     
-    print(f"[环境评估] 当前股价: ${S} | IV30: {iv30*100:.2f}% | IVP: {ivp}th")
-    print(f"[动态风控] 自动设定 Delta 底线为: {limit_delta:.4f} (需更接近0)")
-    print(f"  -> 逻辑解释: 当前 IVP 为 {ivp}，限制被行权概率高于 {abs(limit_delta)*100:.2f}% 的合约。")
-    print(f"[动态风控] 自动设定年化收益率底线为: {ideal_return*100:.2f}%")
-    print(f"  -> 逻辑解释: 高风险需高溢价，需索要 {ideal_return*100:.2f}% 的回报。\n")
+    print(f"\n[环境评估] 当前股价: ${S} | IV30: {iv30_val*100:.2f}%")
+    print(f"[波动排位] IVP: {ivp}th | HVP: {hvp}th | 排位差(IVP-HVP): {vp_diff}")
+    print(trace_msg) # 打印逻辑链说明
+    print(f"[动态风控] 联合调整后允许的最大 Delta 底线为: {limit_delta:.4f}")
+    print(f"[动态风控] 联合调整后校准的目标年化收益率为: {ideal_return*100:.2f}%")
 
     T = T_days / 365
     max_strike = np.floor(S)
@@ -76,55 +109,48 @@ def find_optimal_strikes_with_alert(S, iv30, ivp, T_days, absolute_min_return=0.
     def scan_strikes(target_yield):
         results = []
         for K in strikes_to_test:
-            price = bs_put_price(S, K, T, r, iv30)
-            delta = bs_put_delta(S, K, T, r, iv30)
+            price = bs_put_price(S, K, T, r, iv30_val)
+            delta = bs_put_delta(S, K, T, r, iv30_val)
             ann_return = (price / K) / T
             if limit_delta <= delta <= -0.02 and ann_return >= target_yield:
                 true_margin_of_safety = (S - (K - price)) / S
-                results.append({"Strike": round(K, 2), "Price": round(price, 2), "Delta": round(delta, 4), "Return (%)": round(ann_return * 100, 2), "MOS (%)": round(true_margin_of_safety * 100, 2)})
+                results.append({
+                    "Strike": round(K, 2), 
+                    "Price": round(price, 2), 
+                    "Delta": round(delta, 4), 
+                    "Return (%)": round(ann_return * 100, 2), 
+                    "MOS (%)": round(true_margin_of_safety * 100, 2)
+                })
         return results
 
-    # 尝试理想收益率
-    ideal_results = scan_strikes(ideal_return)
-    
-    # --- 准备“30%底线理论值” ---
-    k_30 = find_strike_for_target_return(S, iv30, T_days, absolute_min_return, r)
-    p_30 = bs_put_price(S, k_30, T, r, iv30) if k_30 else 0
-    d_30 = bs_put_delta(S, k_30, T, r, iv30) if k_30 else 0
-    
-    bottom_line_str = f"【底线参考】满足 {absolute_min_return*100:.2f}% 收益率的理论档位: Strike {k_30:.2f} | Price {p_30:.2f} | Delta {d_30:.4f}"
+    # 计算精准的底线参考数据（包含权利金）
+    k_30 = find_strike_for_target_return(S, iv30_val, T_days, absolute_min_return, r)
+    p_30 = bs_put_price(S, k_30, T, r, iv30_val) if k_30 else 0
+    d_30 = bs_put_delta(S, k_30, T, r, iv30_val) if k_30 else 0
+    bottom_line_str = f"【底线参考】年化 {absolute_min_return*100:.2f}% 对应行权价: ${k_30:.2f}, 权利金: ${p_30:.2f}, Delta: {d_30:.4f}"
 
+    ideal_results = scan_strikes(ideal_return)
     if ideal_results:
         df = pd.DataFrame(ideal_results)
         df.insert(4, 'Target (%)', round(ideal_return * 100, 2))
-        print("-> 完美匹配：满足全额风险溢价。\n")
+        print("-> 完美匹配交易建议：\n")
         print(df.sort_values(by="MOS (%)", ascending=False).to_markdown(index=False))
-        print(f"\n{bottom_line_str}")
         return
 
-    print(f"【红线警报】未找到符合条件的行权价（收益率需 {ideal_return*100:.2f}%）。")
-    print(f"-> 启动迭代向下妥协，直至绝对底线 {absolute_min_return*100:.2f}%...\n")
-
+    # 妥协流
     current_target = ideal_return - yield_step
     while current_target >= absolute_min_return - 1e-6:
         compromise_results = scan_strikes(current_target)
         if compromise_results:
             df = pd.DataFrame(compromise_results)
             df.insert(4, 'Target (%)', round(current_target * 100, 2))
-            print(f"-> 妥协成功：在目标收益率 {current_target*100:.2f}% 下找到匹配项。\n")
+            print(f"-> 妥协匹配：在收益率 {current_target*100:.2f}% 下找到匹配项。\n")
             print(df.sort_values(by="MOS (%)", ascending=False).to_markdown(index=False))
-            print(f"\n{bottom_line_str}")
             return
         current_target -= yield_step
 
-    print(f"【迭代结束】妥协到底线仍无解。")
-    print(f"{bottom_line_str}")
+    print(f"【无可执行方案】环境及收益底线无法同时满足。")
+    print(f"{bottom_line_str}\n")
 
-# --- 执行测算 ---
 if __name__ == "__main__":
-    find_optimal_strikes_with_alert(
-        S=18.6,
-        iv30="67%",
-        ivp=49,
-        T_days=17
-    )
+    find_optimal_strikes_with_alert(S=243, iv30="87%", ivp=100, hvp=38, T_days=46)
